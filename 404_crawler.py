@@ -3,14 +3,14 @@
 
 """
 Crawler que rastrea todas las subpáginas de un mismo dominio sin límite de profundidad.
-- No aplica timeout (para evitar que cortes prematuramente).
+- No aplica timeout (para evitar cortes prematuros).
 - Filtra subpáginas al mismo dominio, ignorando 'www.' y fragmentos (#).
-- Registra y guarda enlaces rotos (>= 400) en un CSV con el nombre: dominio.csv
+- Registra y guarda enlaces con sus códigos de estado en un CSV con el nombre: dominio.csv
 - Evita re-visitar URLs ya exploradas.
 - Puede leer archivos locales (file://), aunque suele usarse para http/https.
 
 Uso:
-    python crawler_infinito.py https://ejemplo.com --workers 20 --same_domain True
+    python crawler_infinito.py https://ejemplo.com --workers 20 --same_domain
 """
 
 import logging
@@ -18,13 +18,12 @@ import csv
 import time
 import sys
 import requests
-import urllib.parse
 from queue import Queue
-from urllib.parse import (
-    urlparse, urljoin, urlunparse, ParseResult
-)
+from urllib.parse import urlparse, urljoin, urlunparse, ParseResult
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import argparse
+
 
 def canonicalize_url(url: str) -> str:
     """
@@ -57,10 +56,11 @@ def canonicalize_url(url: str) -> str:
     # Quitar barra final si existe
     return canon.rstrip("/")
 
+
 class Crawler:
     """
     Crawler que rastrea (sin límite de profundidad) todas las subpáginas del
-    mismo dominio, normalizando URLs y registrando enlaces rotos.
+    mismo dominio, normalizando URLs y registrando enlaces con sus códigos de estado.
     """
 
     def __init__(
@@ -92,7 +92,7 @@ class Crawler:
         self.visited = set()
         self.queue = Queue()
         self.queue.put(self.start_url)  # Encolamos la URL inicial
-        self.broken_links = []
+        self.all_links = []  # Lista para almacenar (URL, Código de Estado)
 
         # Configura logs
         logging.basicConfig(
@@ -146,8 +146,12 @@ class Crawler:
                 status_code = 200
                 content_type = "text/html"
                 self.logger.info(f"[LOCAL] {url} => 200 OK")
+                # Registrar en all_links
+                self.all_links.append((url, status_code))
             except Exception as e:
                 self.logger.error(f"[LOCAL] Error abriendo {url}: {e}")
+                # Registrar el error con un código de estado específico, por ejemplo, 0
+                self.all_links.append((url, 0))
                 return
 
         else:
@@ -176,15 +180,14 @@ class Crawler:
 
                 self.logger.info(f"[HTTP] {chain_info}, {len(html_text)} bytes")
 
+                # Registrar en all_links
+                self.all_links.append((url, status_code))
+
             except requests.exceptions.RequestException as e:
                 self.logger.error(f"[HTTP] Excepción con {url}: {e}")
+                # Registrar el error con un código de estado específico, por ejemplo, 0
+                self.all_links.append((url, 0))
                 return
-
-        # --- Análisis del status code ---
-        if status_code >= 400:
-            self.logger.warning(f"[{status_code}] {url}")
-            self.broken_links.append(url)
-            return
 
         # --- Si es HTML, parsear subenlaces ---
         if "text/html" in content_type.lower():
@@ -238,31 +241,30 @@ class Crawler:
         self.logger.info(f"Rastreo completado en {tiempo_total:.2f} seg.")
         self.logger.info(f"Total de URLs visitadas: {len(self.visited)}")
 
-        # Guardar enlaces rotos si los hay
-        if self.broken_links:
+        # Guardar enlaces con sus códigos de estado si los hay
+        if self.all_links:
             self._save_csv()
-            self.logger.info(f"Se encontraron {len(self.broken_links)} enlaces rotos.")
+            self.logger.info(f"Se registraron {len(self.all_links)} enlaces con sus códigos de estado.")
             self.logger.info(f"Guardado en {self.csv_output}")
         else:
-            self.logger.info("No se encontraron enlaces rotos (>= 400).")
+            self.logger.info("No se encontraron enlaces para registrar.")
 
     def _save_csv(self):
         """
-        Guarda en CSV la lista de enlaces rotos.
+        Guarda en CSV la lista de enlaces con sus códigos de estado.
         El CSV se nombra como "<dominio>.csv".
         """
         try:
             with open(self.csv_output, "w", newline="", encoding="utf-8") as cfile:
                 wr = csv.writer(cfile)
-                wr.writerow(["enlace_roto"])
-                for link in self.broken_links:
-                    wr.writerow([link])
+                wr.writerow(["enlace", "codigo_estado"])
+                for link, status in self.all_links:
+                    wr.writerow([link, status])
         except Exception as e:
             self.logger.error(f"No se pudo guardar {self.csv_output}: {e}")
 
-def main():
-    import argparse
 
+def main():
     parser = argparse.ArgumentParser(
         description="Crawler infinito para subpáginas de un mismo dominio."
     )
@@ -272,9 +274,9 @@ def main():
     )
     parser.add_argument(
         "-s", "--same_domain",
-        type=bool,
+        action='store_true',
         default=True,
-        help="Filtrar para rastrear solo el mismo dominio (True/False)."
+        help="Filtrar para rastrear solo el mismo dominio."
     )
     parser.add_argument(
         "-w", "--workers",
@@ -290,6 +292,7 @@ def main():
         max_workers=args.workers
     )
     crawler.run()
+
 
 if __name__ == "__main__":
     main()
